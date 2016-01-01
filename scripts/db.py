@@ -36,7 +36,37 @@ def _():
         c.execute('CREATE TABLE nodes (id INTEGER PRIMARY KEY, key TEXT UNIQUE, checked TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)')
         c.execute('CREATE INDEX byChecked ON nodes(checked)')
         c.execute('CREATE TABLE links (id INTEGER PRIMARY KEY, red INTEGER REFERENCES nodes(id) NOT NULL, blue INTEGER REFERENCES nodes(id) NOT NULL, UNIQUE(red,blue))')
-        
+
+@version(2)
+def _():
+    with closing(l.conn.cursor()) as c:
+        c.execute("ALTER TABLE nodes ADD COLUMN ip TEXT");
+
+def fixkeys(key2ip):
+    @version(3)
+    def _():
+        conn()
+        l.conn.create_function("key2ip", 1, key2ip)
+        with closing(l.conn.cursor()) as c:
+            c.execute('ALTER TABLE nodes RENAME TO oldnodes')
+            c.execute('''CREATE TABLE nodes (
+id INTEGER PRIMARY KEY, 
+key TEXT NOT NULL UNIQUE, 
+ip TEXT NOT NULL,
+checked TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
+            c.execute('INSERT INTO nodes SELECT id,key,key2ip(key) as ip,checked FROM oldnodes')
+            c.execute('ALTER TABLE links RENAME TO oldlinks')
+            c.execute('''CREATE TABLE links (
+id INTEGER PRIMARY KEY, 
+red INTEGER REFERENCES nodes(id) NOT NULL, 
+blue INTEGER REFERENCES nodes(id) NOT NULL, 
+UNIQUE(red,blue))
+                ''')
+            c.execute('INSERT INTO links SELECT id,red,blue FROM oldlinks')
+            c.execute('DROP TABLE oldlinks')
+            c.execute('DROP TABLE oldnodes')
+            c.execute('VACUUM ANALYZE')
+
 def retry_on_locked(s):
     def deco(f):
         def wrapper(*a,**kw):
@@ -58,23 +88,21 @@ def get_peers(key):
         c.execute("SELECT checked > datetime('now','-1 day') FROM nodes WHERE id = ?",(ident,))
         ok = c.fetchone()
         if not ok or not ok[0]:
-            return ()
-        c.execute("""SELECT key FROM nodes
-WHERE id IN (
-  SELECT blue FROM links WHERE red = (
-    SELECT id FROM nodes WHERE id = ?))
-""",(ident,))
-        return [row[0] for row in c.fetchall()]
+            return ident,()
+        c.execute("SELECT (SELECT ip FROM nodes WHERE id = blue),blue FROM links WHERE red = ?",(ident,))
+        return ident,[row[0] for row in c.fetchall()]
     
 @retry_on_locked(1)
 def set_peers(key,peers):
     with conn(), closing(l.conn.cursor()) as c:
         peers = [peer2node(peer,c) for peer in peers]
         ident = peer2node(key,c)
+        peers = [peer for peer in peers if peer != ident]
         for p in peers:
             c.execute('INSERT OR REPLACE INTO links (red,blue) VALUES (?,?)',
                       (ident,p))
         c.execute("UPDATE nodes SET checked = datetime('now') WHERE id = ?",(ident,))
+    return peers
 
 def peer2node(key,c):
     c.execute('SELECT id FROM nodes WHERE key = ?',(key,))

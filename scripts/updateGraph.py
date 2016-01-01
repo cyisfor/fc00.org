@@ -46,6 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 
 def main():
+    db.fixkeys(key_utils.to_ipv6)
     parser = argparse.ArgumentParser(description='Submit nodes and links to fc00')
     parser.add_argument('-v', '--verbose', help='increase output verbosity',
                         dest='verbose', action='store_true')
@@ -59,19 +60,20 @@ def main():
 
     get_peer_queue = queue.Queue(0)
     result_queue = queue.Queue(0)
-    e = ThreadPoolExecutor(max_workers=8)
+    e = ThreadPoolExecutor(max_workers=1)
     def args():
         for ip,node in nodes.items():
             yield ip,keyFromAddr(node['addr']),node['path']
     args = zip(*args())
     dbnodes = {}
-    for peers, node_id, ip in e.map(get_peers_derp, *args):
+    for peers, node_id, ip in map(get_peers_derp, *args):
         get_edges_for_peers(edges, peers, node_id)
         dbnodes[node_id] = {
                         'ip': ip,
                         'peers': peers,
                         'id': id,
         }
+    print('otay!')
     send_graph(dbnodes, edges)
     sys.exit(0)
 
@@ -228,21 +230,21 @@ def get_edges_for_peers(edges, peers, node_key):
 
         if A not in edges:
             edges[A] = []
-
-        if not([True for edge in edges[A] if edge['b'] == B]):
-            edges[A] += [edge]
-
+        edges[A] = B
 
 def send_graph(nodes, edges):
     print('Nodes: {:d}\nEdges: {:d}\n'.format(len(nodes), len(edges)))
 
     with open('out.dot','wt') as out:
-        out.write('graph cjdns {\n')
+        out.write('digraph cjdns {\n')
         for ident,node in nodes.items():
-            out.write('  n{} [label="{}"];\n',ident,node['ip'].rsplit(':',1)[-1])
-        for node,peers in edges.items():
-            for p in peers:
-                out.write('  n{} -> n{}\n',node,p);
+            out.write('  n{} [label="{}"];\n'.format(
+                ident,
+                node['ip'].rsplit(':',1)[-1]))
+        for node,peer in edges.items():
+            out.write('  n{} -> n{}\n'.format(
+                node,
+                peer));
         out.write('}\n')
     return
     json_graph = json.dumps(graph)
