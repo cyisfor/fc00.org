@@ -72,7 +72,7 @@ def main():
     e = ThreadPoolExecutor(max_workers=1)
     def args():
         for ip,node in nodes.items():
-            yield ip,keyFromAddr(node['addr']),node['path']
+            yield ip,keyFromAddr(node['addr']),node['path'],node['version']
     args = zip(*args())
     dbnodes = {}
     for peers, node_id, ip in map(get_peers_derp, *args):
@@ -94,13 +94,13 @@ def con():
     local.con = con
     return con
     
-def get_peers_derp(ip,key,path):
-    print('check',ip)
-    ident,peers = db.get_peers(key)
+def get_peers_derp(ip,key,path,version):
+    print('check',ip,version)
+    ident,peers = db.get_peers(key,version)
     if not peers:
         peers = get_all_peers(con(), path)
         pprint(('adding peers to db',len(peers)))
-        ident,peers = db.set_peers(key,peers)
+        ident,peers = db.set_peers(key,peers,version)
     else:
         pprint(('got db peers!',len(peers)))
     return peers,ident,ip
@@ -262,8 +262,11 @@ def send_graph(nodes, edges):
 
     graph = {
         'nodes':
-                    ({'ip': node['ip'], 'version': node['version']} for node in nodes),
-        'edges': [{'a': A, 'b': B} for a,b in edges.items()]
+        [{'ip': node['ip'],
+          'version':
+          db.getVersion(node['id'])
+        } for node in nodes],
+        'edges': [{'a': A, 'b': B} for A,B in edges.items()]
     }
     json_graph = json.dumps(graph)
     print(json_graph)

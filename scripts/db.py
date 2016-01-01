@@ -43,7 +43,18 @@ def _():
         c.execute("ALTER TABLE nodes ADD COLUMN ip TEXT");
 
 key2ip = None
-        
+
+def redoLinks(c):
+    c.execute('ALTER TABLE links RENAME TO oldlinks')
+    c.execute('''CREATE TABLE links (
+id INTEGER PRIMARY KEY, 
+red INTEGER REFERENCES nodes(id) NOT NULL, 
+blue INTEGER REFERENCES nodes(id) NOT NULL, 
+UNIQUE(red,blue))
+                ''')
+    c.execute('INSERT INTO links SELECT id,red,blue FROM oldlinks')
+    c.execute('DROP TABLE oldlinks')
+
 def fixkeys(derp):
     global key2ip
     key2ip = derp
@@ -59,18 +70,28 @@ key TEXT NOT NULL UNIQUE,
 ip TEXT NOT NULL,
 checked TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
             c.execute('INSERT INTO nodes SELECT id,key,key2ip(key) as ip,checked FROM oldnodes')
-            c.execute('ALTER TABLE links RENAME TO oldlinks')
-            c.execute('''CREATE TABLE links (
-id INTEGER PRIMARY KEY, 
-red INTEGER REFERENCES nodes(id) NOT NULL, 
-blue INTEGER REFERENCES nodes(id) NOT NULL, 
-UNIQUE(red,blue))
-                ''')
-            c.execute('INSERT INTO links SELECT id,red,blue FROM oldlinks')
-            c.execute('DROP TABLE oldlinks')
+            redoLinks(c)
             c.execute('DROP TABLE oldnodes')
             c.execute('VACUUM ANALYZE')
 
+@version(4)
+def _():
+    l.conn.execute("ALTER TABLE nodes ADD COLUMN lastVersion INT")
+
+@version(5)
+def _():
+    with closing(l.conn.cursor()) as c:	
+        c.execute('ALTER TABLE nodes RENAME TO oldnodes')
+        c.execute('''CREATE TABLE nodes (
+    id INTEGER PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    ip TEXT NOT NULL,
+  lastVersion INTEGER,
+checked TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
+        c.execute('DROP INDEX byChecked;')
+        c.execute('CREATE INDEX byChecked ON nodes(checked)')
+        redoLinks(c)
+    
 def retry_on_locked(s):
     def deco(f):
         def wrapper(*a,**kw):
@@ -86,9 +107,9 @@ def retry_on_locked(s):
     return deco
         
 @retry_on_locked(1)
-def get_peers(key):
+def get_peers(key,lastVersion):
     with conn(),closing(l.conn.cursor()) as c:
-        ident = peer2node(key,c)
+        ident = peer2node(key,c,lastVersion)
         c.execute("SELECT checked > datetime('now','-1 day') FROM nodes WHERE id = ?",(ident,))
         ok = c.fetchone()
         if not ok or not ok[0]:
@@ -97,14 +118,11 @@ def get_peers(key):
         return ident,c.fetchall()
     
 @retry_on_locked(1)
-def set_peers(key,peers):
+def set_peers(key,peers,lastVersion):
     with conn(), closing(l.conn.cursor()) as c:
-        try:
-            peers = [peer2node(peer,c) for peer in peers]
-        except:
-            print(peers)
-            raise
-        ident = peer2node(key,c)
+        # getPeers doesn't return the peer's versions, only their key.
+        peers = [peer2node(peer,c) for peer in peers]
+        ident = peer2node(key,c,lastVersion)
         peers = [peer for peer in peers if peer != ident]
         for p in peers:
             c.execute('INSERT OR REPLACE INTO links (red,blue) VALUES (?,?)',
@@ -112,10 +130,13 @@ def set_peers(key,peers):
         c.execute("UPDATE nodes SET checked = datetime('now') WHERE id = ?",(ident,))
     return get_peers(key)
 
-def peer2node(key,c):
+def peer2node(key,c,lastVersion=None):
     c.execute('SELECT id FROM nodes WHERE key = ?',(key,))
     ident = c.fetchone()
     if ident:
+        c.execute('UPDATE nodes SET lastVersion = ? WHERE id = ?',
+                  (lastVersion,ident))
         return ident[0]
-    c.execute('INSERT INTO nodes (key,ip) VALUES (?,?)',(key,key2ip(key)))
+    c.execute('INSERT INTO nodes (key,ip,lastVersion) VALUES (?,?,?)',
+              (key,key2ip(key),lastVersion))
     return c.lastrowid
