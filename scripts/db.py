@@ -42,7 +42,11 @@ def _():
     with closing(l.conn.cursor()) as c:
         c.execute("ALTER TABLE nodes ADD COLUMN ip TEXT");
 
-def fixkeys(key2ip):
+key2ip = None
+        
+def fixkeys(derp):
+    global key2ip
+    key2ip = derp
     @version(3)
     def _():
         conn()
@@ -90,24 +94,28 @@ def get_peers(key):
         if not ok or not ok[0]:
             return ident,()
         c.execute("SELECT (SELECT ip FROM nodes WHERE id = blue),blue FROM links WHERE red = ?",(ident,))
-        return ident,[row[0] for row in c.fetchall()]
+        return ident,c.fetchall()
     
 @retry_on_locked(1)
 def set_peers(key,peers):
     with conn(), closing(l.conn.cursor()) as c:
-        peers = [peer2node(peer,c) for peer in peers]
+        try:
+            peers = [peer2node(peer,c) for peer in peers]
+        except:
+            print(peers)
+            raise
         ident = peer2node(key,c)
         peers = [peer for peer in peers if peer != ident]
         for p in peers:
             c.execute('INSERT OR REPLACE INTO links (red,blue) VALUES (?,?)',
                       (ident,p))
         c.execute("UPDATE nodes SET checked = datetime('now') WHERE id = ?",(ident,))
-    return peers
+    return get_peers(key)
 
 def peer2node(key,c):
     c.execute('SELECT id FROM nodes WHERE key = ?',(key,))
     ident = c.fetchone()
     if ident:
         return ident[0]
-    c.execute('INSERT INTO nodes (key) VALUES (?)',(key,))
+    c.execute('INSERT INTO nodes (key,ip) VALUES (?,?)',(key,key2ip(key)))
     return c.lastrowid

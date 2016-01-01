@@ -45,6 +45,15 @@ import queue
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
+def addpeersto(d,n,ip,peers=set()):
+    if n in d:
+        d[n]['peers'].update(peers)
+    else:
+        d[n] = {
+                        'ip': ip,
+            'peers': set(peers)
+        }
+
 def main():
     db.fixkeys(key_utils.to_ipv6)
     parser = argparse.ArgumentParser(description='Submit nodes and links to fc00')
@@ -68,11 +77,10 @@ def main():
     dbnodes = {}
     for peers, node_id, ip in map(get_peers_derp, *args):
         get_edges_for_peers(edges, peers, node_id)
-        dbnodes[node_id] = {
-                        'ip': ip,
-                        'peers': peers,
-                        'id': id,
-        }
+        addpeersto(dbnodes,node_id,ip,peers)
+
+        for ip, id in peers:
+            addpeersto(dbnodes,id,ip)
     print('otay!')
     send_graph(dbnodes, edges)
     sys.exit(0)
@@ -92,7 +100,7 @@ def get_peers_derp(ip,key,path):
     if not peers:
         peers = get_all_peers(con(), path)
         pprint(('adding peers to db',len(peers)))
-        peers = db.set_peers(key,peers)
+        ident,peers = db.set_peers(key,peers)
     else:
         pprint(('got db peers!',len(peers)))
     return peers,ident,ip
@@ -217,7 +225,11 @@ def keyFromAddr(addr):
     return addr.split('.', 5)[-1]
 
 def get_edges_for_peers(edges, peers, node_key):
-    for peer_key in peers:
+    for derp in peers:
+        try: ip,peer_key = derp
+        except:
+            pprint(peers)
+            raise
         if node_key > peer_key:
             A = node_key
             B = peer_key
@@ -237,6 +249,7 @@ def send_graph(nodes, edges):
 
     with open('out.dot','wt') as out:
         out.write('digraph cjdns {\n')
+        out.write("  overlap=false;\n");
         for ident,node in nodes.items():
             out.write('  n{} [label="{}"];\n'.format(
                 ident,
@@ -246,10 +259,17 @@ def send_graph(nodes, edges):
                 node,
                 peer));
         out.write('}\n')
-    return
-    json_graph = json.dumps(graph)
-    print('Sending data to {:s}...'.format(url))
 
+    graph = {
+        'nodes':
+                    ({'ip': node['ip'], 'version': node['version']} for node in nodes),
+        'edges': [{'a': A, 'b': B} for a,b in edges.items()]
+    }
+    json_graph = json.dumps(graph)
+    print(json_graph)
+    return
+    print('Sending data to {:s}...'.format(url))
+    
     payload = {'data': json_graph, 'mail': your_mail, 'version': 2}
     r = requests.post(url, data=payload)
 
