@@ -69,13 +69,13 @@ def main():
 
     get_peer_queue = queue.Queue(0)
     result_queue = queue.Queue(0)
-    e = ThreadPoolExecutor(max_workers=1)
+    e = ThreadPoolExecutor(max_workers=4)
     def args():
         for ip,node in nodes.items():
             yield ip,keyFromAddr(node['addr']),node['path'],node['version']
     args = zip(*args())
     dbnodes = {}
-    for peers, node_id, ip in map(get_peers_derp, *args):
+    for peers, node_id, ip in e.map(get_peers_derp, *args):
         get_edges_for_peers(edges, peers, node_id)
         addpeersto(dbnodes,node_id,ip,peers)
 
@@ -99,10 +99,10 @@ def get_peers_derp(ip,key,path,version):
     ident,peers = db.get_peers(key,version)
     if not peers:
         peers = get_all_peers(con(), path)
-        pprint(('adding peers to db',len(peers)))
+        print(('adding peers to db',len(peers)))
         ident,peers = db.set_peers(key,peers,version)
     else:
-        pprint(('got db peers!',len(peers)))
+        print(('got db peers!',len(peers)))
     return peers,ident,ip
 def connect():
     try:
@@ -262,12 +262,18 @@ def send_graph(nodes, edges):
 
     graph = {
         'nodes':
-        [{'ip': node['ip'],
-          'version':
-          db.getVersion(node['id'])
-        } for node in nodes],
-        'edges': [{'a': A, 'b': B} for A,B in edges.items()]
+                    [],
+        'edges': [{'a': nodes[A]['ip'],
+                   'b': nodes[B]['ip']} for A,B in edges.items()]
     }
+    for ident,node in nodes.items():
+        version = db.get_version(ident)
+        if version is None:
+            continue
+        graph['nodes'].append({
+            'ip': node['ip'],
+          'version': version		
+        } )
     json_graph = json.dumps(graph)
     print(json_graph)
     return

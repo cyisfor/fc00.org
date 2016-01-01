@@ -88,10 +88,12 @@ def _():
     ip TEXT NOT NULL,
   lastVersion INTEGER,
 checked TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
-        c.execute('DROP INDEX byChecked;')
+        #c.execute('DROP INDEX byChecked;')
         c.execute('CREATE INDEX byChecked ON nodes(checked)')
+        c.execute('INSERT INTO nodes (id,key,checked) SELECT id,key,checked FROM oldnodes')
         redoLinks(c)
-    
+        c.execute('DROP TABLE oldnodes')
+        
 def retry_on_locked(s):
     def deco(f):
         def wrapper(*a,**kw):
@@ -105,12 +107,18 @@ def retry_on_locked(s):
                     time.sleep(s)
         return wrapper
     return deco
-        
+
+def get_version(ident):
+    with conn(),closing(l.conn.cursor()) as c:
+        c.execute('SELECT lastVersion FROM nodes WHERE id = ?',(ident,))
+        row = c.fetchone()
+        if row: return row[0]
+
 @retry_on_locked(1)
 def get_peers(key,lastVersion):
     with conn(),closing(l.conn.cursor()) as c:
         ident = peer2node(key,c,lastVersion)
-        c.execute("SELECT checked > datetime('now','-1 day') FROM nodes WHERE id = ?",(ident,))
+        c.execute("SELECT checked > datetime('now','-1 hour') FROM nodes WHERE id = ?",(ident,))
         ok = c.fetchone()
         if not ok or not ok[0]:
             return ident,()
@@ -128,15 +136,21 @@ def set_peers(key,peers,lastVersion):
             c.execute('INSERT OR REPLACE INTO links (red,blue) VALUES (?,?)',
                       (ident,p))
         c.execute("UPDATE nodes SET checked = datetime('now') WHERE id = ?",(ident,))
-    return get_peers(key)
+    return get_peers(key,lastVersion)
 
 def peer2node(key,c,lastVersion=None):
     c.execute('SELECT id FROM nodes WHERE key = ?',(key,))
     ident = c.fetchone()
     if ident:
-        c.execute('UPDATE nodes SET lastVersion = ? WHERE id = ?',
-                  (lastVersion,ident))
-        return ident[0]
+        ident = ident[0]
+        if lastVersion:
+            c.execute('SELECT lastVersion FROM nodes WHERE id = ?',
+                      (ident,))
+            test = c.fetchone()
+            if test and test[0] is not None and test[0] != lastVersion:
+                c.execute('UPDATE nodes SET lastVersion = ? WHERE id = ?',
+                          (lastVersion,ident))
+        return ident
     c.execute('INSERT INTO nodes (key,ip,lastVersion) VALUES (?,?,?)',
               (key,key2ip(key),lastVersion))
     return c.lastrowid
