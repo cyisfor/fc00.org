@@ -1,13 +1,19 @@
-import sqlite3
+import sqlite3,os
+
+from contextlib import closing
 import threading
 l = threading.local()
 
 cache = os.path.expanduser("~/.cache")
 
-l.conn = sqlite3.Connection(os.path.join(cache,"fc00.sqlite"))
-
+def conn():
+    try: return l.conn
+    except AttributeError: pass
+    l.conn = sqlite3.Connection(os.path.join(cache,"fc00.sqlite"))
+    return l.conn
+conn()
 l.conn.execute('CREATE TABLE IF NOT EXISTS versions (latest INTEGER PRIMARY KEY)')
-with l.conn,closing(conn.cursor()) as c:
+with l.conn,closing(l.conn.cursor()) as c:
     c.execute('SELECT latest FROM versions')
     latest = c.fetchone()
     if latest:
@@ -20,42 +26,42 @@ def version(n):
     def deco(f):
         if n > latest:
             f()
-            with closing(l.conn.cursor()) as c:
+            with l.conn,closing(l.conn.cursor()) as c:
                 c.execute('UPDATE versions SET latest = ?',(n,))
     return deco
 
 @version(1)
 def _():
     with closing(l.conn.cursor()) as c:
-        c.execute('CREATE TABLE nodes (id INTEGER PRIMARY KEY, ip TEXT UNIQUE, checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL')
+        c.execute('CREATE TABLE nodes (id INTEGER PRIMARY KEY, key TEXT UNIQUE, checked TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)')
         c.execute('CREATE INDEX byChecked ON nodes(checked)')
         c.execute('CREATE TABLE links (id INTEGER PRIMARY KEY, red INTEGER REFERENCES nodes(id), blue INTEGER REFERENCES nodes(id), UNIQUE(red,blue))')
 
-def get_peers(ip):
-    with closing(l.conn.cursor()) as c:
-        ident = peer2node(ip,c)
+def get_peers(key):
+    with closing(conn().cursor()) as c:
+        ident = peer2node(key,c)
         c.execute("SELECT checked < datetime('now','-1 day') FROM nodes WHERE id = ?",(ident,))
         ok = c.fetchone()
         if not ok or not ok[0]:
             return ()
-        c.execute("""SELECT ip FROM nodes
+        c.execute("""SELECT key FROM nodes
 WHERE id IN (
   SELECT blue FROM links WHERE red = (
     SELECT id FROM nodes WHERE id = ?))
 """,(ident,))
         return [row[0] for row in c.fetchall()]
 
-def set_peers(ip,peers):
-    with l.conn, closing(l.conn.cursor()) as c:
+def set_peers(key,peers):
+    with conn(), closing(l.conn.cursor()) as c:
         peers = [peer2node(peer,c) for peer in peers]
-        ident = peer2node(ip,c)
-            for p in peers:
-                c.execute('INSERT OR REPLACE INTO links (red,blue) VALUES (?,?)',
-                          (ident,p))
+        ident = peer2node(key,c)
+        for p in peers:
+            c.execute('INSERT OR REPLACE INTO links (red,blue) VALUES (?,?)',
+                      (ident,p))
 
-def peer2node(ip,c):
-    c.execute('SELECT id FROM nodes WHERE ip = ?',(ip,))
+def peer2node(key,c):
+    c.execute('SELECT id FROM nodes WHERE key = ?',(key,))
     ident = c.fetchone()
     if ident:
         return ident[0]
-    c.execute('INSERT INTO nodes (ip)',(ip,))
+    c.execute('INSERT INTO nodes (key) VALUES (?)',(key,))

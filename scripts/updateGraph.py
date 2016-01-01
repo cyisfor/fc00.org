@@ -60,7 +60,12 @@ def main():
     get_peer_queue = queue.Queue(0)
     result_queue = queue.Queue(0)
     e = ThreadPoolExecutor(max_workers=1)
-    args = zip(*((node['ip'],node['path']) for node in nodes.values()))	
+    pprint(nodes)
+    sys.exit(0)
+    def args():
+        for node in nodes.values():
+            yield node['ip'],peerFromAddr(node['addr']),node['path']
+    args = zip(*args())
     for peers, node_ip in e.map(get_peers_derp, *args):
         get_edges_for_peers(edges, peers, node_ip)
     send_graph(nodes, edges)
@@ -75,11 +80,13 @@ def con():
     local.con = con
     return con
     
-def get_peers_derp(ip,path):
-    peers = db.get_peers(ip)
+def get_peers_derp(ip,key,path):
+    peers = db.get_peers(key)
     if not peers:
         peers = get_all_peers(con(), path)
-        db.set_peers(ip,peers)
+        pprint(('no peers in db',key,peers))
+        db.set_peers(key,peers)
+    sys.exit(0)
     return peers,ip
 def connect():
     try:
@@ -142,7 +149,6 @@ def get_peers(con, path, nearbyPath=''):
         else:
             res = con.RouterModule_getPeers(path)
         pprint((path,nearbyPath,res))
-        raise RuntimeError('boop')
 
         if res['error'] == 'not_found':
             print('get_peers: node with path {:s} not found, skipping.'
@@ -195,11 +201,13 @@ def get_all_peers(con, path):
         peers.update(res)
 
     for peer in peers:
-        key = peer.split('.', 5)[-1]
+        key = keyFromAddr(peer)
         keys |= {key}
 
     return keys
 
+def keyFromAddr(addr):
+    return addr.split('.', 5)[-1]
 
 def get_edges_for_peers(edges, peers, node_ip):
     for peer_key in peers:
