@@ -8,8 +8,6 @@
 
 # CONFIG
 
-
-
 # URL where data is sent
 
 #	www.fc00.org			  for clearnet access
@@ -20,15 +18,9 @@
 
 url = 'http://www.fc00.org/sendGraph'
 
-
-
 # update your email address, so I can contact you in case something goes wrong
 
 your_mail = 'your@email.here'
-
-
-
-
 
 # ----------------------
 
@@ -36,13 +28,9 @@ your_mail = 'your@email.here'
 
 # ----------------------
 
-
-
 # If this is set to True connection details will be loaded from ~/.cjdnsadmin
 
 cjdns_use_default = True
-
-
 
 # otherwise these are used.
 
@@ -52,11 +40,9 @@ cjdns_port	   = 11234
 
 cjdns_password   = 'NONE'
 
-
-
 ###############################################################################
 
-
+import db
 from pprint import pprint
 
 import sys
@@ -67,11 +53,7 @@ import json
 
 import argparse
 
-
-
 import requests
-
-
 
 import cjdns
 
@@ -79,277 +61,323 @@ from cjdns import key_utils
 
 from cjdns import admin_tools
 
-
-
 import queue
 
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
-
-
 def main():
 
-    parser = argparse.ArgumentParser(description='Submit nodes and links to fc00')
-    parser.add_argument('-v', '--verbose', help='increase output verbosity',
-                        dest='verbose', action='store_true')
-    parser.set_defaults(verbose=False)
-    args = parser.parse_args()
+parser = argparse.ArgumentParser(description='Submit nodes and links to fc00')
 
+parser.add_argument('-v', '--verbose', help='increase output verbosity',
 
-    con = connect()
+dest='verbose', action='store_true')
 
+parser.set_defaults(verbose=False)
 
-    nodes = dump_node_store(con)
-    edges = {}
+args = parser.parse_args()
 
+con = connect()
 
-    get_peer_queue = queue.Queue(0)
-    result_queue = queue.Queue(0)
+nodes = dump_node_store(con)
 
-    e = ThreadPoolExecutor(max_workers=1)
+edges = {}
 
-    args = zip((node['ip'],node['path']) for node in nodes.values())
-    args = list(args)
-    print(args)
-    
-    for peers, node_ip in e.map(get_peers_derp, *args):
-        get_edges_for_peers(edges, peers, node_ip)
+get_peer_queue = queue.Queue(0)
 
-    send_graph(nodes, edges)
-    sys.exit(0)
+result_queue = queue.Queue(0)
 
+e = ThreadPoolExecutor(max_workers=1)
+
+args = zip(*((node['ip'],node['path']) for node in nodes.values()))	
+
+for peers, node_ip in e.map(get_peers_derp, *args):
+
+get_edges_for_peers(edges, peers, node_ip)
+
+send_graph(nodes, edges)
+
+sys.exit(0)
+
+local = threading.local()
 
 def con():
-    con = threading.local.get('con')
-    if con is None:
-        con = connect()
-        threading.local['con'] = con
-    return con
-    
+
+try: return local.con
+
+except AttributeError: pass
+
+con = connect()
+
+local.con = con
+
+return con
+
 def get_peers_derp(ip,path):
-    return get_all_peers(con, path), ip
+
+peers = db.get_peers(ip)
+
+if not peers:
+
+peers = get_all_peers(con(), path)
+
+db.set_peers(ip,peers)
+
+return peers,ip
 
 def connect():
 
-    try:
-        if cjdns_use_default:
-            print('Connecting using default or ~/.cjdnsadmin credentials...')
-            con = cjdns.connectWithAdminInfo()
-        else:
-            print('Connecting to port {:d}...'.format(cjdns_port))
-            con = cjdns.connect(cjdns_ip, cjdns_port, cjdns_password)
+try:
 
+if cjdns_use_default:
 
-        return con
+print('Connecting using default or ~/.cjdnsadmin credentials...')
 
+con = cjdns.connectWithAdminInfo()
 
-    except:
-        print('Connection failed!')
-        print(traceback.format_exc())
-        sys.exit(1)
+else:
 
+print('Connecting to port {:d}...'.format(cjdns_port))
 
+con = cjdns.connect(cjdns_ip, cjdns_port, cjdns_password)
 
+return con
+
+except:
+
+print('Connection failed!')
+
+print(traceback.format_exc())
+
+sys.exit(1)
 
 def dump_node_store(con):
 
-    nodes = dict()
+nodes = dict()
 
+i = 0
 
-    i = 0
-    while True:
-        res = con.NodeStore_dumpTable(i)
+while True:
 
+res = con.NodeStore_dumpTable(i)
 
-        if not 'routingTable' in res:
-            break
+if not 'routingTable' in res:
 
+break
 
-        for n in res['routingTable']:
-            if not all(key in n for key in ('addr', 'path', 'ip')):
-                continue
+for n in res['routingTable']:
 
+if not all(key in n for key in ('addr', 'path', 'ip')):
 
-            ip = n['ip']
-            path = n['path']
-            addr = n['addr']
-            version = None
-            if 'version' in n:
-                version = n['version']
+continue
 
+ip = n['ip']
 
-            nodes[ip] = {'ip': ip, 'path': path, 'addr': addr, 'version': version}
+path = n['path']
 
+addr = n['addr']
 
-        if not 'more' in res or res['more'] != 1:
-            break
+version = None
 
+if 'version' in n:
 
-        i += 1
+version = n['version']
 
+nodes[ip] = {'ip': ip, 'path': path, 'addr': addr, 'version': version}
 
-    return nodes
+if not 'more' in res or res['more'] != 1:
 
+break
 
+i += 1
 
+return nodes
 
 def get_peers(con, path, nearbyPath=''):
 
-    formatted_path = path
-    if nearbyPath:
-        formatted_path = '{:s} (nearby {:s})'.format(path, nearbyPath)
+formatted_path = path
 
+if nearbyPath:
 
-    i = 1
-    retry = 2
-    while i < retry + 1:
-        if nearbyPath:
-            res = con.RouterModule_getPeers(path, nearbyPath=nearbyPath)
-        else:
-            res = con.RouterModule_getPeers(path)
+formatted_path = '{:s} (nearby {:s})'.format(path, nearbyPath)
 
-        pprint((path,nearbyPath,res))
-        raise RuntimeError('boop')
+i = 1
 
+retry = 2
 
-        if res['error'] == 'not_found':
-            print('get_peers: node with path {:s} not found, skipping.'
-                  .format(formatted_path))
-            return []
+while i < retry + 1:
 
+if nearbyPath:
 
-        elif res['error'] != 'none':
-            print('get_peers: failed with error `{:s}` on {:s}, trying again. {:d} tries remaining.'
-                  .format(res['error'], formatted_path, retry-i))
-        elif res['result'] == 'timeout':
-            print('get_peers: timed out on {:s}, trying again. {:d} tries remaining.'
-                  .format(formatted_path, retry-i))
-        else:
-            return res['peers']
+res = con.RouterModule_getPeers(path, nearbyPath=nearbyPath)
 
+else:
 
-        i += 1
+res = con.RouterModule_getPeers(path)
 
+pprint((path,nearbyPath,res))
 
-    print('get_peers: failed on final try, skipping {:s}'
-          .format(formatted_path))
-    return []
+raise RuntimeError('boop')
 
+if res['error'] == 'not_found':
 
+print('get_peers: node with path {:s} not found, skipping.'
 
+.format(formatted_path))
+
+return []
+
+elif res['error'] != 'none':
+
+print('get_peers: failed with error `{:s}` on {:s}, trying again. {:d} tries remaining.'
+
+.format(res['error'], formatted_path, retry-i))
+
+elif res['result'] == 'timeout':
+
+print('get_peers: timed out on {:s}, trying again. {:d} tries remaining.'
+
+.format(formatted_path, retry-i))
+
+else:
+
+return res['peers']
+
+i += 1
+
+print('get_peers: failed on final try, skipping {:s}'
+
+.format(formatted_path))
+
+return []
 
 def get_all_peers(con, path):
 
-    peers = set()
-    keys = set()
+peers = set()
 
+keys = set()
 
-    res = get_peers(con, path)
-    peers.update(res)
+res = get_peers(con, path)
 
+peers.update(res)
 
-    if not res:
-        return keys
+if not res:
 
+return keys
 
-    last_peer = res[-1]
-    checked_paths = set()
+last_peer = res[-1]
 
-    while len(res) > 1:
-        last_path = (last_peer.split('.', 1)[1]
-                              .rsplit('.', 2)[0])
+checked_paths = set()
 
+while len(res) > 1:
 
-        if last_path in checked_paths:
-            break
-        else:
-            checked_paths.add(last_path)
+last_path = (last_peer.split('.', 1)[1]
 
+.rsplit('.', 2)[0])
 
-        res = get_peers(con, path, last_path)
-        if res:
-            last_peer = res[-1]
-        else:
-            break
+if last_path in checked_paths:
 
+break
 
-        peers.update(res)
+else:
 
+checked_paths.add(last_path)
 
-    for peer in peers:
-        key = peer.split('.', 5)[-1]
-        keys |= {key}
+res = get_peers(con, path, last_path)
 
+if res:
 
-    return keys
+last_peer = res[-1]
 
+else:
 
+break
 
+peers.update(res)
+
+for peer in peers:
+
+key = peer.split('.', 5)[-1]
+
+keys |= {key}
+
+return keys
 
 def get_edges_for_peers(edges, peers, node_ip):
 
-    for peer_key in peers:
-        peer_ip = key_utils.to_ipv6(peer_key)
+for peer_key in peers:
 
+peer_ip = key_utils.to_ipv6(peer_key)
 
-        if node_ip > peer_ip:
-            A = node_ip
-            B = peer_ip
-        else:
-            A = peer_ip
-            B = node_ip
+if node_ip > peer_ip:
 
+A = node_ip
 
-        edge = { 'a': A,
-                 'b': B }
+B = peer_ip
 
+else:
 
-        if A not in edges:
-            edges[A] = []
+A = peer_ip
 
+B = node_ip
 
-        if not([True for edge in edges[A] if edge['b'] == B]):
-            edges[A] += [edge]
+edge = { 'a': A,
 
+'b': B }
 
+if A not in edges:
 
+edges[A] = []
+
+if not([True for edge in edges[A] if edge['b'] == B]):
+
+edges[A] += [edge]
 
 def send_graph(nodes, edges):
 
-    graph = {
-        'nodes': [],
-        'edges': [edge for sublist in edges.values()
-                   for edge	in sublist],
-    }
+graph = {
 
+'nodes': [],
 
-    for node in nodes.values():
-        graph['nodes'].append({
-            'ip': node['ip'],
-            'version': node['version'],
-        })
+'edges': [edge for sublist in edges.values()
 
+for edge	in sublist],
 
-    print('Nodes: {:d}\nEdges: {:d}\n'.format(len(nodes), len(edges)))
+}
 
+for node in nodes.values():
 
-    pprint(graph)
-    return
-    json_graph = json.dumps(graph)
-    print('Sending data to {:s}...'.format(url))
+graph['nodes'].append({
 
+'ip': node['ip'],
 
-    payload = {'data': json_graph, 'mail': your_mail, 'version': 2}
-    r = requests.post(url, data=payload)
+'version': node['version'],
 
+})
 
-    if r.text == 'OK':
-        print('Done!')
-    else:
-        print('{:s}'.format(r.text))
+print('Nodes: {:d}\nEdges: {:d}\n'.format(len(nodes), len(edges)))
 
+pprint(graph)
+
+return
+
+json_graph = json.dumps(graph)
+
+print('Sending data to {:s}...'.format(url))
+
+payload = {'data': json_graph, 'mail': your_mail, 'version': 2}
+
+r = requests.post(url, data=payload)
+
+if r.text == 'OK':
+
+print('Done!')
+
+else:
+
+print('{:s}'.format(r.text))
 
 if __name__ == '__main__':
 
-    main()
+main()
