@@ -12,11 +12,11 @@
 
 # URL where data is sent
 
-#    www.fc00.org              for clearnet access
+#	www.fc00.org			  for clearnet access
 
-#    h.fc00.org                for hyperboria
+#	h.fc00.org				for hyperboria
 
-#    [fc53:dcc5:e89d:9082:4097:6622:5e82:c654] for DNS-less access
+#	[fc53:dcc5:e89d:9082:4097:6622:5e82:c654] for DNS-less access
 
 url = 'http://www.fc00.org/sendGraph'
 
@@ -46,9 +46,9 @@ cjdns_use_default = True
 
 # otherwise these are used.
 
-cjdns_ip     = '127.0.0.1'
+cjdns_ip	 = '127.0.0.1'
 
-cjdns_port       = 11234
+cjdns_port	   = 11234
 
 cjdns_password   = 'NONE'
 
@@ -57,6 +57,7 @@ cjdns_password   = 'NONE'
 ###############################################################################
 
 
+from pprint import pprint
 
 import sys
 
@@ -82,6 +83,7 @@ from cjdns import admin_tools
 
 import queue
 
+from concurrent.futures import ThreadPoolExecutor
 import threading
 
 
@@ -105,50 +107,28 @@ def main():
     get_peer_queue = queue.Queue(0)
     result_queue = queue.Queue(0)
 
+    e = ThreadPoolExecutor(max_workers=1)
 
-    for k in nodes:
-        get_peer_queue.put(k)
-
-
-    for i in range(8):
-        t = threading.Thread(target=worker, args=[nodes, get_peer_queue, result_queue,
-                                                  args.verbose])
-        t.daemon = True
-        t.start()
-
-
-    for i in range(len(nodes)):
-        peers, node_ip = result_queue.get()
+    args = zip((node['ip'],node['path']) for node in nodes.values())
+    args = list(args)
+    print(args)
+    
+    for peers, node_ip in e.map(get_peers_derp, *args):
         get_edges_for_peers(edges, peers, node_ip)
-
 
     send_graph(nodes, edges)
     sys.exit(0)
 
 
-def worker(nodes, get_peer_queue, result, verbose=False):
-
-    con = connect()
-
-
-    while True:
-        try:
-            k = get_peer_queue.get_nowait()
-        except queue.Empty:
-            return
-
-
-        node = nodes[k]
-        if verbose:
-            print('fetch', node)
-        node_ip = node['ip']
-
-
-        peers = get_all_peers(con, node['path'])
-
-
-        result.put((peers, node_ip))
-
+def con():
+    con = threading.local.get('con')
+    if con is None:
+        con = connect()
+        threading.local['con'] = con
+    return con
+    
+def get_peers_derp(ip,path):
+    return get_all_peers(con, path), ip
 
 def connect():
 
@@ -229,7 +209,8 @@ def get_peers(con, path, nearbyPath=''):
         else:
             res = con.RouterModule_getPeers(path)
 
-
+        pprint((path,nearbyPath,res))
+        raise RuntimeError('boop')
 
 
         if res['error'] == 'not_found':
@@ -274,7 +255,6 @@ def get_all_peers(con, path):
 
     last_peer = res[-1]
     checked_paths = set()
-
 
     while len(res) > 1:
         last_path = (last_peer.split('.', 1)[1]
@@ -340,13 +320,13 @@ def send_graph(nodes, edges):
     graph = {
         'nodes': [],
         'edges': [edge for sublist in edges.values()
-                   for edge    in sublist],
+                   for edge	in sublist],
     }
 
 
     for node in nodes.values():
         graph['nodes'].append({
-            'ip':      node['ip'],
+            'ip': node['ip'],
             'version': node['version'],
         })
 
@@ -354,7 +334,6 @@ def send_graph(nodes, edges):
     print('Nodes: {:d}\nEdges: {:d}\n'.format(len(nodes), len(edges)))
 
 
-    from pprint import pprint
     pprint(graph)
     return
     json_graph = json.dumps(graph)
