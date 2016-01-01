@@ -59,16 +59,20 @@ def main():
 
     get_peer_queue = queue.Queue(0)
     result_queue = queue.Queue(0)
-    e = ThreadPoolExecutor(max_workers=1)
-    pprint(nodes)
-    sys.exit(0)
+    e = ThreadPoolExecutor(max_workers=8)
     def args():
-        for node in nodes.values():
-            yield node['ip'],peerFromAddr(node['addr']),node['path']
+        for ip,node in nodes.items():
+            yield ip,keyFromAddr(node['addr']),node['path']
     args = zip(*args())
-    for peers, node_ip in e.map(get_peers_derp, *args):
-        get_edges_for_peers(edges, peers, node_ip)
-    send_graph(nodes, edges)
+    dbnodes = {}
+    for peers, node_id, ip in e.map(get_peers_derp, *args):
+        get_edges_for_peers(edges, peers, node_id)
+        dbnodes[node_id] = {
+                        'ip': ip,
+                        'peers': peers,
+                        'id': id,
+        }
+    send_graph(dbnodes, edges)
     sys.exit(0)
 
 local = threading.local()
@@ -81,13 +85,15 @@ def con():
     return con
     
 def get_peers_derp(ip,key,path):
-    peers = db.get_peers(key)
+    print('check',ip)
+    ident,peers = db.get_peers(key)
     if not peers:
         peers = get_all_peers(con(), path)
-        pprint(('no peers in db',key,peers))
-        db.set_peers(key,peers)
-    sys.exit(0)
-    return peers,ip
+        pprint(('adding peers to db',len(peers)))
+        peers = db.set_peers(key,peers)
+    else:
+        pprint(('got db peers!',len(peers)))
+    return peers,ident,ip
 def connect():
     try:
         if cjdns_use_default:
@@ -148,7 +154,6 @@ def get_peers(con, path, nearbyPath=''):
             res = con.RouterModule_getPeers(path, nearbyPath=nearbyPath)
         else:
             res = con.RouterModule_getPeers(path)
-        pprint((path,nearbyPath,res))
 
         if res['error'] == 'not_found':
             print('get_peers: node with path {:s} not found, skipping.'
@@ -209,16 +214,14 @@ def get_all_peers(con, path):
 def keyFromAddr(addr):
     return addr.split('.', 5)[-1]
 
-def get_edges_for_peers(edges, peers, node_ip):
+def get_edges_for_peers(edges, peers, node_key):
     for peer_key in peers:
-        peer_ip = key_utils.to_ipv6(peer_key)
-
-        if node_ip > peer_ip:
-            A = node_ip
-            B = peer_ip
+        if node_key > peer_key:
+            A = node_key
+            B = peer_key
         else:
-            A = peer_ip
-            B = node_ip
+            A = peer_key
+            B = node_key
 
         edge = { 'a': A,
                  'b': B }
@@ -231,21 +234,16 @@ def get_edges_for_peers(edges, peers, node_ip):
 
 
 def send_graph(nodes, edges):
-    graph = {
-        'nodes': [],
-        'edges': [edge for sublist in edges.values()
-                   for edge	in sublist],
-    }
-
-    for node in nodes.values():
-        graph['nodes'].append({
-            'ip': node['ip'],
-            'version': node['version'],
-        })
-
     print('Nodes: {:d}\nEdges: {:d}\n'.format(len(nodes), len(edges)))
 
-    pprint(graph)
+    with open('out.dot','wt') as out:
+        out.write('graph cjdns {\n')
+        for ident,node in nodes.items():
+            out.write('  n{} [label="{}"];\n',ident,node['ip'].rsplit(':',1)[-1])
+        for node,peers in edges.items():
+            for p in peers:
+                out.write('  n{} -> n{}\n',node,p);
+        out.write('}\n')
     return
     json_graph = json.dumps(graph)
     print('Sending data to {:s}...'.format(url))
